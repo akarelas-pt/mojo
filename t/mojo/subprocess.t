@@ -167,4 +167,51 @@ $subprocess->run(
 Mojo::IOLoop->start;
 like $fail, qr/Whatever/, 'right error';
 
+# progress sub, but no progress calls
+$fail = undef;
+$result = undef;
+my @progress;
+$subprocess = Mojo::IOLoop::Subprocess->new;
+$subprocess->run(
+  sub { 1 + 1 },
+  sub {
+    my ($subprocess, $err, $two) = @_;
+    $fail = $err;
+    $result .= $two;
+  },
+  sub {
+    push @progress, [@_];
+  }
+);
+Mojo::IOLoop->start;
+ok !$fail, 'no error';
+is $result, 2, 'right result';
+is_deeply \@progress, [], 'right progress';
+
+# progress sub, but two progress calls
+$fail = undef;
+$result = undef;
+@progress = ();
+$subprocess = Mojo::IOLoop::Subprocess->new;
+$subprocess->run(
+  sub {
+    my ($subprocess) = @_;
+    $subprocess->progress(50);
+    $subprocess->progress(75, 'almost');
+    1 + 1;
+  },
+  sub {
+    my ($subprocess, $err, $two) = @_;
+    $fail = $err;
+    $result .= $two;
+  },
+  sub {
+    push @progress, [@_];
+  }
+);
+Mojo::IOLoop->start;
+ok !$fail, 'no error';
+is $result, 2, 'right result';
+is_deeply \@progress, [[50], [75, 'almost']], 'right progress';
+
 done_testing();

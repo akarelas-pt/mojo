@@ -15,7 +15,7 @@ has serialize   => sub { \&Storable::freeze };
 sub pid { shift->{pid} }
 
 sub run {
-  my ($self, $child, $parent) = @_;
+  my ($self, $child, $parent, $on_progress) = @_;
 
   # No fork emulation support
   croak 'Subprocesses do not support fork emulation' if $Config{d_pseudofork};
@@ -24,10 +24,14 @@ sub run {
   pipe(my $reader, my $writer) or croak "Can't create pipe: $!";
   $writer->autoflush(1);
 
+  $self->{secret} = do {srand; join '', map {('a'..'z')[rand 26]} (1..100)}
+    if $on_progress;
+
   # Child
   croak "Can't fork: $!" unless defined(my $pid = $self->{pid} = fork);
   unless ($pid) {
     $self->ioloop->reset;
+    $self->{writer} = $writer;
     my $results = eval { [$self->$child] } || [];
     print $writer $self->serialize->([$@, @$results]);
     POSIX::_exit(0);
@@ -38,16 +42,32 @@ sub run {
   my $stream = Mojo::IOLoop::Stream->new($reader)->timeout(0);
   $self->ioloop->stream($stream);
   my $buffer = '';
-  $stream->on(read => sub { $buffer .= pop });
+  $stream->on(read => sub {
+    $buffer .= pop;
+    while ($on_progress and $buffer =~ s/\A(.*?)\Q$self->{secret}\E//s) {
+      my @data = @{ $self->deserialize->($1) };
+      $on_progress->(@data);
+    }
+  });
   $stream->on(
     close => sub {
       return unless $$ == $me;
       waitpid $pid, 0;
+      while ($on_progress and $buffer =~ s/\A(.*?)\Q$self->{secret}\E//s) {
+        my @data = @{ $self->deserialize->($1) };
+        $on_progress->(@data);
+      }      
       my $results = eval { $self->deserialize->($buffer) } || [];
       $self->$parent(shift(@$results) // $@, @$results);
     }
   );
   return $self;
+}
+
+sub progress {
+  my ($self, @data) = @_;
+  my $writer = $self->{writer};
+  print $writer $self->serialize->([@data]) . $self->{secret};
 }
 
 1;
